@@ -27,7 +27,6 @@ def parse_page(page_num, session):
 
         soup = BeautifulSoup(response.text, 'html.parser')
 
-
         all_links = soup.find_all('a', href=True)
         flat_urls = set()
         for a in all_links:
@@ -69,22 +68,63 @@ def parse_page(page_num, session):
         return pd.DataFrame()
 
 
+def get_total_pages(session):
+    """Определяет максимальное количество страниц на сайте"""
+    logger.info(f"Определяем общее количество страниц на {config.BASE_URL}...")
+    headers = random.choice(config.USER_AGENTS)
+
+    try:
+        response = session.get(config.BASE_URL, headers=headers, timeout=10)
+        if response.status_code != 200:
+            logger.error(f"Не удалось получить стартовую страницу для пагинации. Статус: {response.status_code}")
+            return 1
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        pagination_links = soup.find_all('a', href=re.compile(r'\?p=\d+'))
+
+        page_numbers = []
+        for a in pagination_links:
+            href = a['href']
+            match = re.search(r'\?p=(\d+)', href)
+            if match:
+                page_numbers.append(int(match.group(1)))
+
+        if page_numbers:
+            max_page = max(page_numbers)
+            logger.info(f"=== ОБНАРУЖЕНО СТРАНИЦ ДЛЯ СКАНИРОВАНИЯ: {max_page} ===")
+            return max_page
+
+        logger.warning("Блок пагинации не найден на странице. Парсим только страницу 1.")
+        return 1
+
+    except Exception as e:
+        logger.error(f"Ошибка при определении пагинации: {e}")
+        return 1
+
+
+
+
+
+
 def main():
     total_dataset = []
-    pages_to_parse = 3
+
 
     logger.info("=== ЗАПУСК БОЛЬШОГО СБОРЩИКА ДАННЫХ ===")
 
     with requests.Session() as session:
+        pages_to_parse = get_total_pages(session)
         for page in range(1, pages_to_parse + 1):
             page_results = parse_page(page, session)
 
             if not page_results.empty:
                 total_dataset.append(page_results)
 
-            delay = random.uniform(4.1, 7.2)
-            logger.info(f"   Ожидание {delay:.2f} сек перед следующей страницей...")
-            time.sleep(delay)
+            if page < pages_to_parse:
+                delay = random.uniform(4.1, 7.2)
+                logger.info(f"   Ожидание {delay:.2f} сек перед следующей страницей...")
+                time.sleep(delay)
 
     if not total_dataset:
         logger.error("Все страницы вернули пустой результат. Выход.")
@@ -97,7 +137,7 @@ def main():
         final_df.to_csv(config.CSV_FILENAME, sep=";", index=False, encoding="utf-8-sig")
         logger.info(f"Данные успешно выгружены в файл: {config.CSV_FILENAME}")
     except Exception as e:
-        logger.error(f"Не удалось保存 CSV-файл: {e}")
+        logger.error(f"Не удалось сохранить CSV-файл: {e}")
 
 
 if __name__ == "__main__":
