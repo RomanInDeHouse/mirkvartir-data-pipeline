@@ -129,7 +129,7 @@ def main():
 
     with requests.Session() as session:
         # Устанавливаем лимит на количество парсов!!!
-        pages_to_parse = 400
+        pages_to_parse = 3
         logger.info(f"Принудительно установлено страниц для парсинга: {pages_to_parse}")
 
         for page in range(1, pages_to_parse + 1):
