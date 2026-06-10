@@ -1,0 +1,53 @@
+version: '3.8'
+services:
+  # 1. База данных PostgreSQL (DWH)
+  postgres:
+    image: postgres:15-alpine
+    container_name: de_postgres
+    environment:
+      POSTGRES_USER: roman
+      POSTGRES_PASSWORD: secret_password
+      POSTGRES_DB: real_estate
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U roman -d real_estate"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Airflow (Все компоненты в одном контейнере для экономии ресурсов)
+  airflow:
+    image: apache/airflow:2.8.1-python3.10
+    container_name: de_airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://roman:secret_password@postgres:5432/real_estate
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./config.py:/opt/airflow/config.py
+    command: >
+      bash -c "
+      echo '=== Шаг 1: Запуск миграции базы данных ===' &&
+      airflow db migrate &&
+      echo '=== Ожидаем 15 секунд для фиксации таблиц ===' &&
+      sleep 15 &&
+      echo '=== Шаг 2: Создание пользователя ===' &&
+      airflow users create --username admin --firstname Roman --lastname DE --role Admin --email admin@example.com --password admin || true &&
+      echo '=== Ожидаем 5 секунд ===' &&
+      sleep 5 &&
+      echo '=== Шаг 3: Запуск компонентов Airflow ===' &&
+      airflow webserver & 
+      sleep 5 && 
+      airflow scheduler"
+
+volumes:
+  pg_data:
