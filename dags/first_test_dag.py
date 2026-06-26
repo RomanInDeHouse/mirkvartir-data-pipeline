@@ -1,21 +1,23 @@
 from datetime import datetime
 from airflow.decorators import dag, task
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 import pandas as pd
-import os
+import io
 
+BUCKET_NAME = "mirkvartir-raw"
 
 @dag(
-    dag_id='my_first_test_pipeline',
+    dag_id='my_first_test_pipeline_v2',
     start_date=datetime(2026, 6, 1),
     schedule='0 0 * * *',
     catchup=False,
-    tags=['learning']
+    tags=['learning', 's3']
 )
 def test_pipeline():
     @task
-    def extract_step():
-        """Шаг 1: Полноценный сборщик данных с обходом страниц"""
+    def extract_to_s3():
+        """Шаг 1: Полноценный сборщик данных с обходом страниц и выгрузкой в S3"""
         import requests
         import pandas as pd
         import time
@@ -46,7 +48,7 @@ def test_pipeline():
                 logger.info(f"Парсим страницу {page} из {pages_to_parse}...")
 
                 # Вызываем твою функцию парсинга страницы
-                page_results = parse_page(page, session)
+                page_results = parse_page(page, session, logger=logger)
 
                 if page_results is not None and not page_results.empty:
                     total_dataset.append(page_results)
@@ -68,19 +70,34 @@ def test_pipeline():
         final_df = pd.concat(total_dataset, ignore_index=True)
         logger.info(f"Сбор окончен. Всего объектов со всех страниц собрано: {len(final_df)}")
 
-        # Путь к файлу обмена для Airflow
-        output_path = '/tmp/mirkvartir_raw.csv'
+        #Генерация уникального имени файла на основе запуска
+        execution_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        s3_key = f"moscow_realty_{execution_date}.csv"
 
-        # Сохраняем в CSV
-        final_df.to_csv(output_path, index=False, encoding="utf-8-sig")
-        logger.info(f"Данные успешно выгружены в промежуточный файл: {output_path}")
+        #Перевод DataFrame в CSV-строку прямо в оперативной памяти(без сохранения на диск)
+        csv_buffer = io.StringIO()
+        final_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
 
-        return output_path
+        #Подключение к MinIO через созданные коннект и загрузка CSV строки как файл
+        s3_hook = S3Hook(aws_conn_id='my_s3_conn')
+        s3_hook.load_string(
+            string_data=csv_buffer.getvalue(),
+            key=s3_key,
+            bucket_name=BUCKET_NAME,
+            replace=True
+        )
 
+        logger.info(f"Данные успешно отправлены в S3 Data Lake! Имя объекта: {s3_key}")
+        return s3_key
     @task
-    def transform_step(file_path: str):
-        print(f"=== Шаг 2: Читаем данные из файла {file_path} ===")
-        df = pd.read_csv(file_path)
+    def transform_from_s3(s3_key: str):
+        print(f"=== Шаг 2: Достаем объект {s3_key} из S3 хранилища ===")
+        s3_hook = S3Hook(aws_conn_id='my_s3_conn')
+        s3_object = s3_hook.get_key(key=s3_key, bucket_name=BUCKET_NAME)
+        s3_data = s3_object.get()['Body'].read().decode('utf-8')
+
+        # Превращаем скачанный текст в нормальный Pandas DataFrame
+        df = pd.read_csv(io.StringIO(s3_data))
 
         # Очищаем дубликаты по ссылкам перед заливкой
         df = df.drop_duplicates(subset=['link'])
@@ -101,32 +118,26 @@ def test_pipeline():
                 """
         pg_hook.run(create_table_query)
 
-        # 1. Создаем расширенную таблицу под датасет
-        create_table_query = """
-            CREATE TABLE IF NOT EXISTS scraped_realty (
-                id SERIAL PRIMARY KEY,
-                total_price BIGINT,          -- Полная стоимость квартиры
-                price_per_meter BIGINT,      -- Цена за кв. метр
-                calculated_area NUMERIC(5,2), -- Площадь (например, 54.30)
-                link TEXT UNIQUE,            -- Уникальная ссылка
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        pg_hook.run(create_table_query)
 
-        # 2. Временная таблица
+        time_suffix = s3_key.replace("moscow_realty_","").replace(".csv", "").replace("-", "_")
+        temp_table_name = f"temp_realty_{time_suffix}"
+
         engine = pg_hook.get_sqlalchemy_engine()
+
+        #Заливка данных в изолированную таблицу
         df.to_sql(
-            name='temp_scraped_realty',
+            name=temp_table_name,
             con=engine,
             if_exists='replace',
             index=False
+
+
         )
 
-        # 3. Делаем UPSERT: если квартира уже есть, обновляем все её метрики
-        upsert_query = """
+        #  Делаем UPSERT: если квартира уже есть, обновляем все её метрики
+        upsert_query = f"""
             INSERT INTO scraped_realty (total_price, price_per_meter, calculated_area, link)
-            SELECT total_price, price_per_meter, calculated_area, link FROM temp_scraped_realty
+            SELECT total_price, price_per_meter, calculated_area, link FROM {temp_table_name}
             ON CONFLICT (link) 
             DO UPDATE SET 
                 total_price = EXCLUDED.total_price,
@@ -137,12 +148,12 @@ def test_pipeline():
         pg_hook.run(upsert_query)
 
         # 4. Чистим временный объект
-        pg_hook.run("DROP TABLE IF EXISTS temp_scraped_realty;")
+        pg_hook.run(f"DROP TABLE IF EXISTS {temp_table_name};")
         print("=== Расширенные данные успешно синхронизированы в Postgres! ===")
 
     # Теперь по цепочке передается не массив данных, а путь к файлу '/tmp/mirkvartir_raw.csv'
-    file_csv_path = extract_step()
-    transform_step(file_csv_path)
+    current_s3_key = extract_to_s3()
+    transform_from_s3(current_s3_key)
 
 
 dag_instance = test_pipeline()

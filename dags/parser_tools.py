@@ -5,13 +5,13 @@ import bs4
 from bs4 import BeautifulSoup
 import pandas as pd
 import requests
-
-
+import logging
 import config
-from config import logger
 
+# Создание логгера для локального запуска вне Airflow
+default_logger = logging.getLogger("local_parser")
 
-def get_total_pages(session):
+def get_total_pages(session, logger=default_logger):
     """Динамически определяет количество страниц на сайте"""
     headers = random.choice(config.USER_AGENTS)
     try:
@@ -45,7 +45,7 @@ def get_total_pages(session):
         return 1
 
 
-def parse_page(page_num, session):
+def parse_page(page_num, session, logger=default_logger):
     """Сканирует одну страницу и возвращает датафрейм найденных квартир"""
     if page_num == 1:
         url = config.BASE_URL
@@ -123,37 +123,38 @@ def parse_page(page_num, session):
         return pd.DataFrame()
 
 def main():
-    total_dataset = []
 
-    logger.info("=== ЗАПУСК БОЛЬШОГО СБОРЩИКА ДАННЫХ ===")
+
+    logging.basicConfig(level=logging.INFO)
+    total_dataset = []
 
     with requests.Session() as session:
         # Устанавливаем лимит на количество парсов!!!
         pages_to_parse = 3
-        logger.info(f"Принудительно установлено страниц для парсинга: {pages_to_parse}")
+
 
         for page in range(1, pages_to_parse + 1):
-            page_results = parse_page(page, session)
+            page_results = parse_page(page, session, logger=default_logger)
 
             if not page_results.empty:
                 total_dataset.append(page_results)
 
             if page < pages_to_parse:
                 delay = random.uniform(config.DELAY_MIN, config.DELAY_MAX)
-                logger.info(f"   Ожидание {delay:.2f} сек перед следующей страницей...")
+                default_logger.info(f"   Ожидание {delay:.2f} сек перед следующей страницей...")
                 time.sleep(delay)
 
     if not total_dataset:
-        logger.error("Все страницы вернули пустой результат. Выход.")
+        default_logger.error("Все страницы вернули пустой результат. Выход.")
         return
 
     final_df = pd.concat(total_dataset, ignore_index=True)
-    logger.info(f"\nСбор окончен. Всего объектов со всех страниц собрано: {len(final_df)}")
+    default_logger.info(f"\nСбор окончен. Всего объектов со всех страниц собрано: {len(final_df)}")
 
     try:
         final_df.to_csv(config.CSV_FILENAME, sep=";", index=False, encoding="utf-8-sig")
-        logger.info(f"Данные успешно выгружены в файл: {config.CSV_FILENAME}")
+        default_logger.info(f"Данные успешно выгружены в файл: {config.CSV_FILENAME}")
     except Exception as e:
-        logger.error(f"Не удалось сохранить CSV-файл: {e}")
+        default_logger.error(f"Не удалось сохранить CSV-файл: {e}")
 
 

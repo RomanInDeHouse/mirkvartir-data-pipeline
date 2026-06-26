@@ -1,4 +1,4 @@
-version: '3.8'
+
 services:
   # 1. База данных PostgreSQL (DWH)
   postgres:
@@ -18,7 +18,21 @@ services:
       timeout: 5s
       retries: 5
 
-  # 2. Airflow (Все компоненты в одном контейнере для экономии ресурсов)
+  # 2. Объектное хранилище MinIO (S3 Data Lake)
+  minio:
+    image: minio/minio:latest
+    container_name: de_minio 
+    ports:
+      - "9000:9000" #S3 API port
+      - "9001:9001" # Веб интерфейс (консоль)
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  # 3. Airflow (Все компоненты в одном контейнере для экономии ресурсов)
   airflow:
     image: apache/airflow:2.8.1-python3.10
     container_name: de_airflow
@@ -51,3 +65,4 @@ services:
 
 volumes:
   pg_data:
+  minio_data:

@@ -18,7 +18,7 @@ USER_AGENTS = [
 ]
 
 
-logging.basicConfig(
+"""logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
@@ -29,4 +29,4 @@ logging.basicConfig(
 )
 
 
-logger = logging.getLogger("mirkvartir_parser")
+logger = logging.getLogger("mirkvartir_parser")"""
